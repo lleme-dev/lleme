@@ -14,6 +14,7 @@ use crate::domain::chat::{
 use crate::ports::{HttpClient, HttpRequest, read_to_end};
 
 pub mod inbound;
+pub mod reply;
 mod stream;
 
 pub use stream::{AnthropicStream, stream};
