@@ -37,6 +37,41 @@ impl Date {
     }
 }
 
+impl Date {
+    /// The day `days` whole days after 1970-01-01. Saturates at the last
+    /// year `Date` can hold, which no clock reaches.
+    pub fn from_days_since_epoch(days: u64) -> Date {
+        let mut remaining = days;
+        let mut year: u16 = 1970;
+        loop {
+            let length = if Date::new(year, 2, 29).is_some() {
+                366
+            } else {
+                365
+            };
+            if remaining < length || year == u16::MAX {
+                break;
+            }
+            remaining -= length;
+            year += 1;
+        }
+        let mut month = 1;
+        while let Some(last) = (28..=31).rev().find_map(|d| Date::new(year, month, d)) {
+            if remaining < u64::from(last.day) || month == 12 {
+                break;
+            }
+            remaining -= u64::from(last.day);
+            month += 1;
+        }
+        let day = u8::try_from(remaining + 1).unwrap_or(31);
+        Date::new(year, month, day).unwrap_or(Date {
+            year,
+            month,
+            day: 1,
+        })
+    }
+}
+
 impl FromStr for Date {
     type Err = DateError;
 
