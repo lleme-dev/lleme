@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! OpenAI Chat Completions API: request building.
+//! OpenAI Chat Completions API: request building and response parsing.
 
 use std::fmt;
 
 use serde_json::{Map, Value, json};
 
 use super::ProviderError;
-use crate::domain::chat::{ChatRequest, ContentPart, Message, Role, ToolChoice};
-use crate::ports::HttpRequest;
+use crate::domain::chat::{
+    ChatRequest, ChatResponse, ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice,
+    Usage,
+};
+use crate::ports::{HttpClient, HttpRequest, read_to_end};
 
 /// OpenAI's public API endpoint.
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -160,10 +163,115 @@ fn append_message(out: &mut Vec<Value>, message: &Message) -> Result<(), Provide
     Ok(())
 }
 
+/// Maps OpenAI's `finish_reason` to the neutral form.
+pub(crate) fn finish_reason(reason: &str) -> FinishReason {
+    match reason {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        "tool_calls" | "function_call" => FinishReason::ToolCalls,
+        "content_filter" => FinishReason::ContentFilter,
+        other => FinishReason::Other(other.to_string()),
+    }
+}
+
+/// Reads OpenAI's `usage` object. `prompt_tokens` includes both cached
+/// and cache-written tokens, so both are subtracted from the input count.
+/// OpenAI does not report a write's cache lifetime; all writes count as
+/// short-lived.
+pub(crate) fn usage(value: &Value) -> Usage {
+    let count = |v: &Value, key: &str| v[key].as_u64().unwrap_or(0);
+    let details = &value["prompt_tokens_details"];
+    let read = count(details, "cached_tokens");
+    let written = count(details, "cache_write_tokens");
+    Usage {
+        input_tokens: count(value, "prompt_tokens")
+            .saturating_sub(read)
+            .saturating_sub(written),
+        output_tokens: count(value, "completion_tokens"),
+        cache_read_tokens: read,
+        cache_write_short_tokens: written,
+        cache_write_long_tokens: 0,
+    }
+}
+
+/// Turns an HTTP status and body into a response or a typed error.
+pub fn parse_response(status: u16, body: &[u8]) -> Result<ChatResponse, ProviderError> {
+    if !(200..300).contains(&status) {
+        return Err(status_error(status, body));
+    }
+    let malformed = |what: &str| ProviderError::Malformed(format!("openai response {what}"));
+    let value: Value =
+        serde_json::from_slice(body).map_err(|e| ProviderError::Malformed(e.to_string()))?;
+    let choice = value["choices"]
+        .get(0)
+        .ok_or_else(|| malformed("has no choices"))?;
+    let message = &choice["message"];
+    let mut content = Vec::new();
+    if let Some(text) = message["content"].as_str().filter(|t| !t.is_empty()) {
+        content.push(ContentPart::Text(text.to_string()));
+    }
+    for call in message["tool_calls"].as_array().into_iter().flatten() {
+        let function = &call["function"];
+        let (Some(id), Some(name)) = (call["id"].as_str(), function["name"].as_str()) else {
+            return Err(malformed("has a tool call without id or name"));
+        };
+        content.push(ContentPart::ToolCall(ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: function["arguments"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        }));
+    }
+    let text_field = |key: &str| value[key].as_str().map(str::to_string);
+    Ok(ChatResponse {
+        id: text_field("id").ok_or_else(|| malformed("has no id"))?,
+        model: text_field("model").ok_or_else(|| malformed("has no model"))?,
+        content,
+        finish_reason: choice["finish_reason"].as_str().map(finish_reason),
+        usage: usage(&value["usage"]),
+    })
+}
+
+/// Reads OpenAI's error body; an unreadable one still yields the status.
+/// The error type is OpenAI's `code` when present, else its `type`.
+pub(crate) fn status_error(status: u16, body: &[u8]) -> ProviderError {
+    let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let error = &value["error"];
+    ProviderError::Status {
+        status,
+        error_type: error["code"]
+            .as_str()
+            .or_else(|| error["type"].as_str())
+            .map(str::to_string),
+        message: error["message"]
+            .as_str()
+            .unwrap_or("error body was not readable")
+            .to_string(),
+    }
+}
+
+/// Sends a non-streamed request and returns the whole response.
+pub async fn complete<H: HttpClient>(
+    client: &H,
+    config: &OpenAiConfig,
+    request: &ChatRequest,
+    limits: ModelLimits,
+) -> Result<ChatResponse, ProviderError> {
+    let http = build_request(config, request, limits, false)?;
+    let response = client.send(http).await?;
+    let body = read_to_end(response.body).await?;
+    parse_response(response.status, &body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::chat::{ToolCall, ToolDefinition};
+    use crate::domain::chat::ToolDefinition;
+    use crate::ports::HttpError;
+    use crate::ports::http::fake::FakeHttpClient;
+    use crate::test_support::block_on;
 
     fn config() -> OpenAiConfig {
         OpenAiConfig {
@@ -326,5 +434,161 @@ mod tests {
                 "{built:?}"
             );
         }
+    }
+
+    fn call(fixture: &str, status: u16, chunk: usize) -> Result<ChatResponse, ProviderError> {
+        let client = FakeHttpClient::new(status, fixture, chunk);
+        let result = block_on(complete(
+            &client,
+            &config(),
+            &request(vec![text(Role::User, "hi")]),
+            ModelLimits::default(),
+        ));
+        assert_eq!(body(&client.requests()[0]).get("stream"), None);
+        result
+    }
+
+    #[test]
+    fn plain_chat() {
+        let response = call(include_str!("../../../fixtures/openai/chat.json"), 200, 7).unwrap();
+        assert_eq!(response.id, "chatcmpl-fixture01");
+        assert_eq!(response.model, "gpt-6-luna");
+        assert_eq!(
+            response.content,
+            [ContentPart::Text("Hello from the fixture.".into())]
+        );
+        assert_eq!(response.finish_reason, Some(FinishReason::Stop));
+        assert_eq!(
+            response.usage,
+            Usage {
+                input_tokens: 20,
+                output_tokens: 8,
+                ..Usage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn tool_call() {
+        let response = call(include_str!("../../../fixtures/openai/tool.json"), 200, 64).unwrap();
+        assert_eq!(
+            response.content,
+            [ContentPart::ToolCall(ToolCall {
+                id: "call_fixture02".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"city":"Lima"}"#.into(),
+            })]
+        );
+        assert_eq!(response.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(
+            response.usage,
+            Usage {
+                input_tokens: 135,
+                output_tokens: 18,
+                ..Usage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn cache_write_and_read_counts() {
+        let write = call(
+            include_str!("../../../fixtures/openai/cache-write.json"),
+            200,
+            64,
+        )
+        .unwrap();
+        let read = call(
+            include_str!("../../../fixtures/openai/cache-read.json"),
+            200,
+            64,
+        )
+        .unwrap();
+        let base = Usage {
+            input_tokens: 3,
+            output_tokens: 8,
+            ..Usage::default()
+        };
+        assert_eq!(
+            write.usage,
+            Usage {
+                cache_write_short_tokens: 3022,
+                ..base
+            }
+        );
+        assert_eq!(
+            read.usage,
+            Usage {
+                cache_read_tokens: 3022,
+                ..base
+            }
+        );
+    }
+
+    #[test]
+    fn provider_error() {
+        assert_eq!(
+            call(include_str!("../../../fixtures/openai/error-404.json"), 404, 64),
+            Err(ProviderError::Status {
+                status: 404,
+                error_type: Some("model_not_found".into()),
+                message: "The model `lleme-fixture-no-such-model` does not exist or you do not have access to it."
+                    .into(),
+            })
+        );
+        let typed = r#"{"error":{"message":"bad","type":"invalid_request_error","code":null}}"#;
+        assert!(matches!(
+            call(typed, 400, 64),
+            Err(ProviderError::Status { error_type: Some(t), .. }) if t == "invalid_request_error"
+        ));
+        assert!(matches!(
+            call("upstream down", 503, 64),
+            Err(ProviderError::Status {
+                error_type: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_response() {
+        let truncated = &include_str!("../../../fixtures/openai/chat.json")[..90];
+        assert!(matches!(
+            call(truncated, 200, 64),
+            Err(ProviderError::Malformed(_))
+        ));
+        let no_choices = r#"{"id":"x","model":"m","choices":[]}"#;
+        assert!(matches!(
+            call(no_choices, 200, 64),
+            Err(ProviderError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn body_that_breaks_off() {
+        let fixture = include_str!("../../../fixtures/openai/chat.json");
+        let client = FakeHttpClient::new(200, fixture, 16).failing_after(2);
+        let result = block_on(complete(
+            &client,
+            &config(),
+            &request(Vec::new()),
+            ModelLimits::default(),
+        ));
+        assert_eq!(
+            result,
+            Err(ProviderError::Http(HttpError::Body(
+                "connection reset".into()
+            )))
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn complete_future_is_send_on_native() {
+        fn assert_send<T: Send>(_: &T) {}
+        let client = FakeHttpClient::new(200, "", 1);
+        let (cfg, req) = (config(), request(Vec::new()));
+        let future = complete(&client, &cfg, &req, ModelLimits::default());
+        assert_send(&future);
     }
 }
