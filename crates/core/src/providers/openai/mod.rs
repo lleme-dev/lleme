@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! OpenAI Chat Completions API: request building and response parsing.
+//! OpenAI Chat Completions API: request building and response parsing,
+//! whole or streamed.
 
 use std::fmt;
 
@@ -12,6 +13,10 @@ use crate::domain::chat::{
     Usage,
 };
 use crate::ports::{HttpClient, HttpRequest, read_to_end};
+
+mod stream;
+
+pub use stream::{OpenAiStream, stream};
 
 /// OpenAI's public API endpoint.
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com";
