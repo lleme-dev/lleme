@@ -3,6 +3,8 @@
 //! Translation between provider formats and the neutral chat types. The
 //! network call itself goes through the `HttpClient` port.
 
+pub mod anthropic;
+
 use crate::ports::HttpError;
 
 /// Why a call to a provider did not produce a response.
