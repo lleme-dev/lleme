@@ -80,6 +80,17 @@ request to Hyperdrive, which pools behind it, and keeps keys and
 policies in a short-lived cache so the database stays off the request
 path.
 
+Queries use only `query_typed`, which sends an unnamed statement with
+its parameter types, and `simple_query` or `batch_execute`. Named
+prepared statements are not used: through Hyperdrive, the `Close`
+message that `tokio-postgres` sends when a named statement is dropped
+closes the connection, and the next query on it fails. The `&str`
+forms of `query`, `query_one`, `query_opt`, `execute` and `copy_in`
+prepare and drop a named statement on every call, so they are out too.
+The same rule holds on the server, so a query is written one way and
+tested once. The local Workers emulator connects to Postgres directly,
+so no test there would catch a violation.
+
 ### Trace storage
 
 Postgres is the only database. It holds configuration and traces on
