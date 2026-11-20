@@ -3,6 +3,7 @@
 //! Domain types, use cases, ports and provider format translation for Lleme.
 
 mod bounds;
+pub mod domain;
 pub mod ports;
 
 pub use bounds::{MaybeSend, MaybeSync};
