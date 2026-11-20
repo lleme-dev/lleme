@@ -2,14 +2,16 @@
 
 //! Outbound HTTP, used by provider adapters to reach provider APIs.
 
-use std::future::Future;
+use std::fmt;
+use std::future::{Future, poll_fn};
+use std::pin::Pin;
 
 use futures_core::Stream;
 
 use crate::{MaybeSend, MaybeSync};
 
 /// A POST request to a provider. Provider chat APIs take only POST.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     /// Absolute URL.
     pub url: String,
@@ -17,6 +19,44 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     /// Request body, usually JSON.
     pub body: Vec<u8>,
+}
+
+/// Headers whose values are credentials and never appear in `Debug`.
+const SECRET_HEADERS: [&str; 2] = ["authorization", "x-api-key"];
+
+// Requests carry provider keys; a request written to a log must not.
+impl fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let secret = SECRET_HEADERS.iter().any(|s| name.eq_ignore_ascii_case(s));
+                (
+                    name.as_str(),
+                    if secret { "[redacted]" } else { value.as_str() },
+                )
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
+}
+
+/// Reads a whole response body. For non-streamed responses only; streamed
+/// ones are processed chunk by chunk.
+pub async fn read_to_end<B>(mut body: B) -> Result<Vec<u8>, HttpError>
+where
+    B: Stream<Item = Result<Vec<u8>, HttpError>> + Unpin,
+{
+    let mut out = Vec::new();
+    while let Some(chunk) = poll_fn(|cx| Pin::new(&mut body).poll_next(cx)).await {
+        out.extend_from_slice(&chunk?);
+    }
+    Ok(out)
 }
 
 /// A response whose body arrives as a stream of byte chunks, so a
@@ -33,7 +73,7 @@ pub struct HttpResponse<B> {
 
 /// Failures below the HTTP layer. A non-2xx status is not an error here;
 /// the provider adapter interprets it.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum HttpError {
     /// The request could not be sent or no response arrived.
     #[error("http request failed: {0}")]
@@ -181,6 +221,31 @@ mod tests {
         let joined: Vec<u8> = chunks.into_iter().flat_map(|c| c.unwrap()).collect();
         assert_eq!(String::from_utf8(joined).unwrap(), "ol\u{e1} mundo");
         assert_eq!(client.requests(), vec![request()]);
+    }
+
+    #[test]
+    fn debug_output_hides_credentials() {
+        let mut req = request();
+        req.headers
+            .push(("x-api-key".into(), "secret-value".into()));
+        req.headers
+            .push(("Authorization".into(), "Bearer secret-value".into()));
+        let shown = format!("{req:?}");
+        assert!(!shown.contains("secret-value"), "{shown}");
+        assert!(shown.contains("content-type"));
+    }
+
+    #[test]
+    fn read_to_end_joins_chunks_and_reports_body_errors() {
+        let ok = FakeHttpClient::new(200, "abcdef", 4);
+        let body = block_on(ok.send(request())).unwrap().body;
+        assert_eq!(block_on(read_to_end(body)), Ok(b"abcdef".to_vec()));
+        let broken = FakeHttpClient::new(200, "abcdef", 2).failing_after(1);
+        let body = block_on(broken.send(request())).unwrap().body;
+        assert_eq!(
+            block_on(read_to_end(body)),
+            Err(HttpError::Body("connection reset".into()))
+        );
     }
 
     #[test]
