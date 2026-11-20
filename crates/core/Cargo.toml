@@ -6,3 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+futures-core = { version = "0.3", default-features = false, features = ["std"] }
+thiserror = "2"
