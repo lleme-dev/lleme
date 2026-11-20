@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Anthropic Messages API: request building.
+//! Anthropic Messages API: request building and response parsing.
 
 use std::fmt;
 
 use serde_json::{Map, Value, json};
 
 use super::ProviderError;
-use crate::domain::chat::{ChatRequest, ContentPart, Role, ToolCall, ToolChoice};
-use crate::ports::HttpRequest;
+use crate::domain::chat::{
+    ChatRequest, ChatResponse, ContentPart, FinishReason, Role, ToolCall, ToolChoice, Usage,
+};
+use crate::ports::{HttpClient, HttpRequest, read_to_end};
 
 /// Anthropic's public API endpoint.
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -142,10 +144,113 @@ fn tool_input(call: &ToolCall) -> Result<Value, ProviderError> {
     }
 }
 
+/// Maps Anthropic's `stop_reason` to the neutral form.
+pub(crate) fn finish_reason(stop_reason: &str) -> FinishReason {
+    match stop_reason {
+        "end_turn" | "stop_sequence" => FinishReason::Stop,
+        "max_tokens" => FinishReason::Length,
+        "tool_use" => FinishReason::ToolCalls,
+        "refusal" => FinishReason::ContentFilter,
+        other => FinishReason::Other(other.to_string()),
+    }
+}
+
+/// Reads Anthropic's `usage` object. Writes are split by cache lifetime
+/// from `cache_creation`; any part of the total it does not account for,
+/// or the whole total when it is absent, counts as short-lived.
+pub(crate) fn usage(value: &Value) -> Usage {
+    let count = |v: &Value, key: &str| v[key].as_u64().unwrap_or(0);
+    let written = count(value, "cache_creation_input_tokens");
+    let breakdown = &value["cache_creation"];
+    let long = count(breakdown, "ephemeral_1h_input_tokens");
+    let short = count(breakdown, "ephemeral_5m_input_tokens");
+    Usage {
+        input_tokens: count(value, "input_tokens"),
+        output_tokens: count(value, "output_tokens"),
+        cache_read_tokens: count(value, "cache_read_input_tokens"),
+        cache_write_short_tokens: short.max(written.saturating_sub(long)),
+        cache_write_long_tokens: long,
+    }
+}
+
+/// Turns an HTTP status and body into a response or a typed error.
+pub fn parse_response(status: u16, body: &[u8]) -> Result<ChatResponse, ProviderError> {
+    if !(200..300).contains(&status) {
+        return Err(status_error(status, body));
+    }
+    let malformed = |what: &str| ProviderError::Malformed(format!("anthropic response {what}"));
+    let value: Value =
+        serde_json::from_slice(body).map_err(|e| ProviderError::Malformed(e.to_string()))?;
+    let text_field = |key: &str| value[key].as_str().map(str::to_string);
+    let blocks = value["content"]
+        .as_array()
+        .ok_or_else(|| malformed("has no content array"))?;
+    let mut content = Vec::new();
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => {
+                let text = block["text"]
+                    .as_str()
+                    .ok_or_else(|| malformed("has a text block without text"))?;
+                content.push(ContentPart::Text(text.to_string()));
+            }
+            Some("tool_use") => {
+                let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) else {
+                    return Err(malformed("has a tool_use block without id or name"));
+                };
+                content.push(ContentPart::ToolCall(ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    arguments: block["input"].to_string(),
+                }));
+            }
+            // Thinking and server-tool blocks have no neutral form yet.
+            _ => {}
+        }
+    }
+    Ok(ChatResponse {
+        id: text_field("id").ok_or_else(|| malformed("has no id"))?,
+        model: text_field("model").ok_or_else(|| malformed("has no model"))?,
+        content,
+        finish_reason: value["stop_reason"].as_str().map(finish_reason),
+        usage: usage(&value["usage"]),
+    })
+}
+
+/// Reads Anthropic's error body; an unreadable one still yields the status.
+pub(crate) fn status_error(status: u16, body: &[u8]) -> ProviderError {
+    let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let error = &value["error"];
+    ProviderError::Status {
+        status,
+        error_type: error["type"].as_str().map(str::to_string),
+        message: error["message"]
+            .as_str()
+            .unwrap_or("error body was not readable")
+            .to_string(),
+    }
+}
+
+/// Sends a non-streamed request and returns the whole response.
+pub async fn complete<H: HttpClient>(
+    client: &H,
+    config: &AnthropicConfig,
+    request: &ChatRequest,
+    default_max_tokens: u32,
+) -> Result<ChatResponse, ProviderError> {
+    let http = build_request(config, request, default_max_tokens, false)?;
+    let response = client.send(http).await?;
+    let body = read_to_end(response.body).await?;
+    parse_response(response.status, &body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::chat::{Message, ToolDefinition};
+    use crate::ports::HttpError;
+    use crate::ports::http::fake::FakeHttpClient;
+    use crate::test_support::block_on;
 
     fn config() -> AnthropicConfig {
         AnthropicConfig {
@@ -174,6 +279,17 @@ mod tests {
             stop: Vec::new(),
             stream: false,
         }
+    }
+
+    fn call(
+        fixture: &str,
+        status: u16,
+        chunk: usize,
+    ) -> (Result<ChatResponse, ProviderError>, Value) {
+        let client = FakeHttpClient::new(status, fixture, chunk);
+        let result = block_on(complete(&client, &config(), &request(vec![user("hi")]), 64));
+        let sent = serde_json::from_slice(&client.requests()[0].body).unwrap();
+        (result, sent)
     }
 
     #[test]
@@ -272,5 +388,161 @@ mod tests {
                 "{result:?}"
             );
         }
+    }
+
+    #[test]
+    fn plain_chat() {
+        let (result, sent) = call(include_str!("../../fixtures/anthropic/chat.json"), 200, 7);
+        let response = result.unwrap();
+        assert_eq!(response.id, "msg_fixture01");
+        assert_eq!(response.model, "claude-haiku-5-5");
+        assert_eq!(
+            response.content,
+            vec![ContentPart::Text("Hello from the fixture.".into())]
+        );
+        assert_eq!(response.finish_reason, Some(FinishReason::Stop));
+        assert_eq!(
+            response.usage,
+            Usage {
+                input_tokens: 34,
+                output_tokens: 11,
+                ..Usage::default()
+            }
+        );
+        assert_eq!(sent["max_tokens"], 64);
+        assert_eq!(sent.get("stream"), None);
+    }
+
+    #[test]
+    fn tool_call() {
+        let (result, _) = call(include_str!("../../fixtures/anthropic/tool.json"), 200, 64);
+        let response = result.unwrap();
+        assert_eq!(
+            response.content,
+            vec![ContentPart::ToolCall(ToolCall {
+                id: "toolu_fixture02".into(),
+                name: "get_weather".into(),
+                arguments: r#"{"city":"Lima"}"#.into(),
+            })]
+        );
+        assert_eq!(response.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(
+            response.usage,
+            Usage {
+                input_tokens: 380,
+                output_tokens: 50,
+                ..Usage::default()
+            }
+        );
+    }
+
+    #[test]
+    fn cache_write_and_read_counts() {
+        let (write, _) = call(
+            include_str!("../../fixtures/anthropic/cache-write.json"),
+            200,
+            64,
+        );
+        let (read, _) = call(
+            include_str!("../../fixtures/anthropic/cache-read.json"),
+            200,
+            64,
+        );
+        let base = Usage {
+            input_tokens: 32,
+            output_tokens: 11,
+            ..Usage::default()
+        };
+        assert_eq!(
+            write.unwrap().usage,
+            Usage {
+                cache_write_long_tokens: 5403,
+                ..base
+            }
+        );
+        assert_eq!(
+            read.unwrap().usage,
+            Usage {
+                cache_read_tokens: 5403,
+                ..base
+            }
+        );
+    }
+
+    #[test]
+    fn writes_without_a_breakdown_count_as_short() {
+        let reported = json!({ "input_tokens": 1, "cache_creation_input_tokens": 10 });
+        assert_eq!(usage(&reported).cache_write_short_tokens, 10);
+        let partial = json!({ "cache_creation_input_tokens": 10, "cache_creation": { "ephemeral_1h_input_tokens": 4 } });
+        assert_eq!(
+            (
+                usage(&partial).cache_write_short_tokens,
+                usage(&partial).cache_write_long_tokens
+            ),
+            (6, 4)
+        );
+    }
+
+    #[test]
+    fn provider_error() {
+        let (result, _) = call(
+            include_str!("../../fixtures/anthropic/error-404.json"),
+            404,
+            64,
+        );
+        assert_eq!(
+            result,
+            Err(ProviderError::Status {
+                status: 404,
+                error_type: Some("not_found_error".into()),
+                message: "model: lleme-fixture-no-such-model".into(),
+            })
+        );
+        let (unreadable, _) = call("<html>bad gateway</html>", 502, 64);
+        assert!(matches!(
+            unreadable,
+            Err(ProviderError::Status {
+                status: 502,
+                error_type: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_response() {
+        let truncated = &include_str!("../../fixtures/anthropic/chat.json")[..80];
+        assert!(matches!(
+            call(truncated, 200, 64).0,
+            Err(ProviderError::Malformed(_))
+        ));
+        assert!(matches!(
+            call(r#"{"id":"m","model":"x"}"#, 200, 64).0,
+            Err(ProviderError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn body_that_breaks_off() {
+        let client =
+            FakeHttpClient::new(200, include_str!("../../fixtures/anthropic/chat.json"), 16)
+                .failing_after(2);
+        let result = block_on(complete(&client, &config(), &request(vec![user("hi")]), 64));
+        assert_eq!(
+            result,
+            Err(ProviderError::Http(HttpError::Body(
+                "connection reset".into()
+            )))
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn complete_future_is_send_on_native() {
+        fn assert_send<T: Send>(_: &T) {}
+        let client = FakeHttpClient::new(200, "", 1);
+        let (cfg, req) = (config(), request(Vec::new()));
+        let future = complete(&client, &cfg, &req, 1);
+        assert_send(&future);
     }
 }
