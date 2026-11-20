@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Anthropic Messages API: request building and response parsing.
+//! Anthropic Messages API: request building and response parsing, whole
+//! or streamed.
 
 use std::fmt;
 
@@ -11,6 +12,10 @@ use crate::domain::chat::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, Role, ToolCall, ToolChoice, Usage,
 };
 use crate::ports::{HttpClient, HttpRequest, read_to_end};
+
+mod stream;
+
+pub use stream::{AnthropicStream, stream};
 
 /// Anthropic's public API endpoint.
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -392,7 +397,11 @@ mod tests {
 
     #[test]
     fn plain_chat() {
-        let (result, sent) = call(include_str!("../../fixtures/anthropic/chat.json"), 200, 7);
+        let (result, sent) = call(
+            include_str!("../../../fixtures/anthropic/chat.json"),
+            200,
+            7,
+        );
         let response = result.unwrap();
         assert_eq!(response.id, "msg_fixture01");
         assert_eq!(response.model, "claude-haiku-5-5");
@@ -415,7 +424,11 @@ mod tests {
 
     #[test]
     fn tool_call() {
-        let (result, _) = call(include_str!("../../fixtures/anthropic/tool.json"), 200, 64);
+        let (result, _) = call(
+            include_str!("../../../fixtures/anthropic/tool.json"),
+            200,
+            64,
+        );
         let response = result.unwrap();
         assert_eq!(
             response.content,
@@ -439,12 +452,12 @@ mod tests {
     #[test]
     fn cache_write_and_read_counts() {
         let (write, _) = call(
-            include_str!("../../fixtures/anthropic/cache-write.json"),
+            include_str!("../../../fixtures/anthropic/cache-write.json"),
             200,
             64,
         );
         let (read, _) = call(
-            include_str!("../../fixtures/anthropic/cache-read.json"),
+            include_str!("../../../fixtures/anthropic/cache-read.json"),
             200,
             64,
         );
@@ -486,7 +499,7 @@ mod tests {
     #[test]
     fn provider_error() {
         let (result, _) = call(
-            include_str!("../../fixtures/anthropic/error-404.json"),
+            include_str!("../../../fixtures/anthropic/error-404.json"),
             404,
             64,
         );
@@ -511,7 +524,7 @@ mod tests {
 
     #[test]
     fn malformed_response() {
-        let truncated = &include_str!("../../fixtures/anthropic/chat.json")[..80];
+        let truncated = &include_str!("../../../fixtures/anthropic/chat.json")[..80];
         assert!(matches!(
             call(truncated, 200, 64).0,
             Err(ProviderError::Malformed(_))
@@ -524,9 +537,12 @@ mod tests {
 
     #[test]
     fn body_that_breaks_off() {
-        let client =
-            FakeHttpClient::new(200, include_str!("../../fixtures/anthropic/chat.json"), 16)
-                .failing_after(2);
+        let client = FakeHttpClient::new(
+            200,
+            include_str!("../../../fixtures/anthropic/chat.json"),
+            16,
+        )
+        .failing_after(2);
         let result = block_on(complete(&client, &config(), &request(vec![user("hi")]), 64));
         assert_eq!(
             result,

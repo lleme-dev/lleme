@@ -24,6 +24,14 @@ pub enum ProviderError {
         /// The provider's message, as sent.
         message: String,
     },
+    /// The provider reported an error after the stream had started.
+    #[error("provider stream was interrupted: {message}")]
+    Interrupted {
+        /// The provider's own error code, such as `overloaded_error`.
+        error_type: Option<String>,
+        /// The provider's message, as sent.
+        message: String,
+    },
     /// The provider answered 2xx with a body this adapter cannot read.
     #[error("provider response is malformed: {0}")]
     Malformed(String),
