@@ -170,7 +170,10 @@ jobs:
               if (problems.length) {
                 await upsertComment(`${MARKER}\n${problems.join('\n\n')}`);
                 await setStatus('failure', missing.length ? `Not signed: ${missing.join(', ')}` : 'Commit authors cannot be checked');
-                core.setFailed(problems.join('\n'));
+                // The `cla` status above is the gate. Failing this job too would
+                // leave a red check that a later signature, recorded by another
+                // run, never clears.
+                core.warning(problems.join('\n'));
               } else {
                 await upsertComment(`${MARKER}\nAll commit authors have accepted the contributor license agreement.`);
                 await setStatus('success', 'All commit authors have accepted the CLA');
