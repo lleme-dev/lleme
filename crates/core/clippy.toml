@@ -1,0 +1,24 @@
+# The core runs unchanged on Tokio and on Cloudflare Workers (wasm32).
+# These calls either do not exist there or panic at runtime, so they are
+# denied here; time comes from the Clock port and all I/O from ports.
+disallowed-types = [
+  { path = "std::time::Instant", reason = "panics on wasm32; use the Clock port" },
+  { path = "std::time::SystemTime", reason = "panics on wasm32; use the Clock port" },
+  { path = "std::fs::File", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::fs::OpenOptions", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::net::TcpStream", reason = "no sockets in the core; I/O goes through a port" },
+  { path = "std::net::TcpListener", reason = "no sockets in the core; I/O goes through a port" },
+  { path = "std::net::UdpSocket", reason = "no sockets in the core; I/O goes through a port" },
+  { path = "std::thread::Builder", reason = "Workers are single-threaded" },
+]
+disallowed-methods = [
+  { path = "std::thread::spawn", reason = "Workers are single-threaded" },
+  { path = "std::thread::sleep", reason = "Workers are single-threaded" },
+  { path = "std::fs::read", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::fs::read_to_string", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::fs::read_dir", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::fs::write", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::fs::create_dir_all", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::fs::remove_file", reason = "no filesystem on Workers; I/O goes through a port" },
+  { path = "std::env::var", reason = "configuration is read once by the runtime and passed in" },
+]

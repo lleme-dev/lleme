@@ -55,6 +55,22 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The dependency rules in ARCHITECTURE.md; crates/core/clippy.toml
+      # covers the std calls the core may not make.
+      - name: Check crate dependency rules
+        run: |
+          deps() { cargo tree --locked -p "$1" -e normal,build --target all --prefix none --format '{p}' | cut -d' ' -f1 | sort -u; }
+          fail=0
+          if deps lleme-core | grep -x -e tokio -e lleme-server -e lleme-edge; then
+            echo "::error::lleme-core must not depend on the crates listed above"; fail=1
+          fi
+          if deps lleme-server | grep -x lleme-edge; then
+            echo "::error::lleme-server must not depend on lleme-edge"; fail=1
+          fi
+          if deps lleme-edge | grep -x lleme-server; then
+            echo "::error::lleme-edge must not depend on lleme-server"; fail=1
+          fi
+          exit "$fail"
       - name: Test
         run: cargo test --workspace --locked
       - name: Check core for wasm32
