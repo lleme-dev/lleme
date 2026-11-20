@@ -92,7 +92,7 @@ pub enum CatalogError {
     /// The file is not valid JSON of the expected shape.
     #[error("model catalog is malformed: {0}")]
     Malformed(String),
-    /// The same provider and name appear twice.
+    /// A model name appears twice, under the same or another provider.
     #[error("model catalog lists {0} twice")]
     Duplicate(String),
     /// A model has no prices, or periods out of date order.
@@ -130,7 +130,8 @@ impl Catalog {
         let mut seen = std::collections::HashSet::new();
         for model in &file.models {
             let label = format!("{:?} {}", model.provider, model.name);
-            if !seen.insert((model.provider, model.name.as_str())) {
+            // Names are unique across providers, so `find` is unambiguous.
+            if !seen.insert(model.name.as_str()) {
                 return Err(CatalogError::Duplicate(label));
             }
             let ordered = model
@@ -144,6 +145,12 @@ impl Catalog {
         Ok(Catalog {
             models: file.models,
         })
+    }
+
+    /// The model named `name`, whatever its provider. Used until routing
+    /// chooses the provider.
+    pub fn find(&self, name: &str) -> Option<&Model> {
+        self.models.iter().find(|m| m.name == name)
     }
 
     /// The model a provider serves under `name`.
@@ -193,6 +200,12 @@ mod tests {
             NanoUsd(3_200 + 5_500 + 1_080_600)
         );
         let luna = catalog.model(Provider::OpenAi, "gpt-6-luna").unwrap();
+        assert_eq!(catalog.find("gpt-6-luna"), Some(luna));
+        assert_eq!(
+            catalog.find("claude-opus-5-5").map(|m| m.provider),
+            Some(Provider::Anthropic)
+        );
+        assert_eq!(catalog.find("no-such-model"), None);
         assert!(luna.capabilities.has_tool_reasoning_limit);
         assert!(
             catalog
@@ -270,6 +283,11 @@ mod tests {
         let ok = model("m", &[period("2026-01-01", 1)]);
         assert!(matches!(
             error(file(&[ok.clone(), ok.clone()])),
+            CatalogError::Duplicate(_)
+        ));
+        let other_provider = ok.replace("\"openai\"", "\"anthropic\"");
+        assert!(matches!(
+            error(file(&[ok.clone(), other_provider])),
             CatalogError::Duplicate(_)
         ));
         assert!(matches!(
