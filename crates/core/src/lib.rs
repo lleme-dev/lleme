@@ -5,6 +5,7 @@
 mod bounds;
 pub mod domain;
 pub mod ports;
+pub mod providers;
 
 pub use bounds::{MaybeSend, MaybeSync};
 

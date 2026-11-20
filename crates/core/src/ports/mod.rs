@@ -5,4 +5,4 @@
 
 pub mod http;
 
-pub use http::{HttpClient, HttpError, HttpRequest, HttpResponse};
+pub use http::{HttpClient, HttpError, HttpRequest, HttpResponse, read_to_end};
