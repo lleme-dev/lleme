@@ -40,3 +40,15 @@ pub enum ProviderError {
     #[error("request cannot be sent to this provider: {0}")]
     InvalidRequest(String),
 }
+
+/// Why a client request cannot be read, or cannot be translated to
+/// another provider's format.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RequestError {
+    /// A required field is missing or has the wrong type.
+    #[error("invalid request: {0}")]
+    Invalid(String),
+    /// Valid in the client's format, but not translatable yet.
+    #[error("request cannot be translated: {0}")]
+    Unsupported(String),
+}
