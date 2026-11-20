@@ -57,8 +57,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      # Tests included: some only compile on wasm32, to prove a port
+      # accepts a non-Send implementation there.
       - name: Check core for wasm32
-        run: cargo check -p lleme-core --target wasm32-unknown-unknown --locked
+        run: cargo clippy -p lleme-core --target wasm32-unknown-unknown --all-targets --locked -- -D warnings
 
   deny:
     needs: changes
