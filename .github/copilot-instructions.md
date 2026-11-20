@@ -20,6 +20,11 @@ reads the whole diff after you and makes the decision.
    - Every stored record carries `project_id`, and it is the first
      column of every index on a trace table.
    - Postgres is the only database. Flag any new datastore.
+   - Postgres queries use only `query_typed`, `simple_query` or
+     `batch_execute`. Flag `prepare`, `prepare_typed`, and the `&str`
+     forms of `query`, `query_one`, `query_opt`, `execute` and
+     `copy_in`: they create named statements, which break connections
+     through Hyperdrive.
    - Telemetry must never block or fail a request.
    - When the router's confidence is low, it must pick the stronger
      model.
