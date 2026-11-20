@@ -51,7 +51,10 @@ reads the whole diff after you and makes the decision.
 Mention, once, at the top of the review, if any of these is true:
 
 - the title is not in Conventional Commits format
-- the diff mixes unrelated changes or is too large to review well
+- the diff mixes unrelated changes
+- the diff has more than about 400 changed lines of production code, or
+  more than about 1,000 in total; tests, fixtures, lockfiles and
+  generated code do not count toward the 400
 - a source file lacks the `SPDX-License-Identifier: AGPL-3.0-only` header
 - behavior changed and the documentation did not
 

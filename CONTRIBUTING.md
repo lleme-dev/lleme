@@ -26,11 +26,12 @@ Do not report security problems in a public issue. Follow
 
 Small fixes can go straight to a pull request.
 
-A larger change starts with an issue: a new feature, a change to the
-public API, to the data model or to a port in the core crate, or
-anything above roughly 400 changed lines. Describe the problem and the
-design you have in mind, and wait for a maintainer to agree before you
-build it. This avoids work that cannot be merged.
+A larger change starts with an issue: a new feature, any change to the
+public API, to the data model or to a port in the core crate, or more
+than about 400 changed lines of production code (see "Pull requests"
+for what counts). Describe the problem and the design you have in
+mind, and wait for a maintainer to agree before you build it. This
+avoids work that cannot be merged.
 
 ## Project layout
 
@@ -80,11 +81,21 @@ Rust jobs, and the reverse.
 
 What we look for:
 
-- **One purpose per pull request.** A refactor and a behavior change go
-  in separate pull requests.
-- **Small enough to review in about 30 minutes.** Above roughly 400
-  changed lines, split it.
-- **Tests for the new behavior**, and for the bug when it is a fix.
+- **One purpose per pull request.** A preparatory refactor goes in its
+  own pull request, before the behavior change.
+- **Reviewable in about 30 minutes.** That means about 400 changed
+  lines of production code at most. Production code is what lives
+  under `crates/*/src` and `portal/src`, excluding tests.
+- **Not counted toward the 400:** tests (`tests/` directories,
+  `#[cfg(test)]` modules, `*.test.*` and `*.spec.*` files), fixtures,
+  snapshots, SQL migrations, `Cargo.lock`, `pnpm-lock.yaml` and
+  generated code such as the OpenAPI client.
+- **A hard ceiling of about 1,000 changed lines in total**, everything
+  included. Above it, split the pull request even if production code
+  is under 400.
+- **Tests for the new behavior**, and for the bug when it is a fix,
+  in the same pull request as the code they cover. No follow-up pull
+  request that only adds tests.
 - **Documentation updated** when behavior or configuration changes.
 - **A title in Conventional Commits format.** Pull requests are merged
   by squash, and the title becomes the commit message.
