@@ -1,0 +1,6 @@
+# Cargo resolves only crate versions published at least this long ago, so
+# a compromised release has time to be found and yanked before it can
+# reach Cargo.lock. Dependabot uses the same delay (cooldown in
+# .github/dependabot.yml).
+[registry]
+global-min-publish-age = "7 days"
