@@ -17,8 +17,9 @@ reads the whole diff after you and makes the decision.
 3. **Architecture rules** (flag every violation):
    - `crates/core` must compile to `wasm32-unknown-unknown`: no threads,
      filesystem, sockets, `tokio` types or system clock calls there.
-   - Every stored record and every ClickHouse ordering key carries
-     `project_id`.
+   - Every stored record carries `project_id`, and it is the first
+     column of every index on a trace table.
+   - Postgres is the only database. Flag any new datastore.
    - Telemetry must never block or fail a request.
    - When the router's confidence is low, it must pick the stronger
      model.
