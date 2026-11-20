@@ -2,6 +2,7 @@
 
 //! Provider-neutral types and rules.
 
+pub mod catalog;
 pub mod chat;
 pub mod date;
 pub mod money;
