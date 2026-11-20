@@ -33,23 +33,28 @@ pub async fn stream<H: HttpClient>(
     Ok(OpenAiStream::new(response.body))
 }
 
-/// The events of one streamed response. Ends after `[DONE]`, or after the
-/// first error.
-pub struct OpenAiStream<B> {
-    body: B,
+/// Translates OpenAI SSE bytes into neutral stream events, apart from
+/// any HTTP body, so the same code serves the translated stream and the
+/// copy read for usage when a response is forwarded as is.
+pub(crate) struct OpenAiEvents {
     parser: SseParser,
     ready: VecDeque<Result<StreamEvent, ProviderError>>,
     started: bool,
     finished: bool,
 }
 
-impl<B> OpenAiStream<B>
-where
-    B: Stream<Item = Result<Vec<u8>, HttpError>> + Unpin,
-{
-    pub(crate) fn new(body: B) -> Self {
+/// The events of one streamed response. Ends after `[DONE]`, or after the
+/// first error.
+pub struct OpenAiStream<B> {
+    body: B,
+    events: OpenAiEvents,
+    ready: VecDeque<Result<StreamEvent, ProviderError>>,
+    done: bool,
+}
+
+impl OpenAiEvents {
+    pub(crate) fn new() -> Self {
         Self {
-            body,
             parser: SseParser::new(),
             ready: VecDeque::new(),
             started: false,
@@ -130,6 +135,55 @@ where
                 .push_back(Ok(StreamEvent::Usage(usage(&chunk["usage"]))));
         }
     }
+
+    /// Feeds body bytes and returns the events they complete. After the
+    /// last event or an error, further bytes are ignored.
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<Result<StreamEvent, ProviderError>> {
+        if !self.finished {
+            match self.parser.push(bytes) {
+                Ok(events) => {
+                    for event in events {
+                        if self.finished {
+                            break;
+                        }
+                        self.translate(event);
+                    }
+                }
+                Err(error) => self.fail(error),
+            }
+        }
+        self.ready.drain(..).collect()
+    }
+
+    /// Called when the body ends; an error if the stream was cut short.
+    pub(crate) fn end(&mut self) -> Option<ProviderError> {
+        if self.finished {
+            return None;
+        }
+        self.finished = true;
+        Some(ProviderError::Malformed(
+            "openai stream ended before [DONE]".into(),
+        ))
+    }
+
+    /// Whether the last event or an error has been seen.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+impl<B> OpenAiStream<B>
+where
+    B: Stream<Item = Result<Vec<u8>, HttpError>> + Unpin,
+{
+    pub(crate) fn new(body: B) -> Self {
+        Self {
+            body,
+            events: OpenAiEvents::new(),
+            ready: VecDeque::new(),
+            done: false,
+        }
+    }
 }
 
 impl<B> Stream for OpenAiStream<B>
@@ -144,26 +198,20 @@ where
             if let Some(item) = this.ready.pop_front() {
                 return Poll::Ready(Some(item));
             }
-            if this.finished {
+            if this.done || this.events.is_finished() {
                 return Poll::Ready(None);
             }
             match Pin::new(&mut this.body).poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(bytes))) => match this.parser.push(&bytes) {
-                    Ok(events) => {
-                        for event in events {
-                            if this.finished {
-                                break;
-                            }
-                            this.translate(event);
-                        }
-                    }
-                    Err(error) => this.fail(error),
-                },
-                Poll::Ready(Some(Err(error))) => this.fail(ProviderError::Http(error)),
-                Poll::Ready(None) => this.fail(ProviderError::Malformed(
-                    "openai stream ended before [DONE]".into(),
-                )),
+                Poll::Ready(Some(Ok(chunk))) => this.ready.extend(this.events.push(&chunk)),
+                Poll::Ready(Some(Err(error))) => {
+                    this.ready.push_back(Err(ProviderError::Http(error)));
+                    this.done = true;
+                }
+                Poll::Ready(None) => {
+                    this.ready.extend(this.events.end().map(Err));
+                    this.done = true;
+                }
             }
         }
     }
@@ -178,6 +226,7 @@ mod tests {
     use crate::domain::chat::{
         ChatResponse, ContentPart, FinishReason, ResponseAccumulator, ToolCall, Usage,
     };
+    use crate::ports::http::fake::ChunkedBody;
     use crate::ports::http::fake::FakeHttpClient;
     use crate::test_support::{block_on, collect_body};
 
@@ -380,5 +429,23 @@ mod tests {
                 "connection reset".into()
             ))))
         );
+    }
+
+    #[test]
+    fn translator_gives_the_same_events_without_a_body() {
+        let through_stream = collect_body(OpenAiStream::new(ChunkedBody::of(CHAT.as_bytes(), 7)));
+        let mut translator = OpenAiEvents::new();
+        let mut direct: Vec<_> = CHAT
+            .as_bytes()
+            .chunks(7)
+            .flat_map(|c| translator.push(c))
+            .collect();
+        assert_eq!(translator.end(), None);
+        assert!(translator.is_finished());
+        direct.extend(translator.push(b"data: ignored after the end\n\n"));
+        assert_eq!(direct, through_stream);
+        let mut cut = OpenAiEvents::new();
+        cut.push(&CHAT.as_bytes()[..200]);
+        assert!(matches!(cut.end(), Some(ProviderError::Malformed(_))));
     }
 }
