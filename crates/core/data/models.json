@@ -1,0 +1,84 @@
+{
+  "models": [
+    {
+      "provider": "anthropic",
+      "name": "claude-haiku-5-5",
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "capabilities": { "tools": true, "image_input": true },
+      "prices": [
+        {
+          "effective_from": "2026-11-20",
+          "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "nano_usd_per_mtok": {
+            "input": 100000000,
+            "output": 500000000,
+            "cache_read": 10000000,
+            "cache_write_short": 125000000,
+            "cache_write_long": 200000000
+          },
+          "long_context": {
+            "above_input_tokens": 100000,
+            "nano_usd_per_mtok": {
+              "input": 500000000,
+              "output": 2500000000,
+              "cache_read": 50000000,
+              "cache_write_short": 625000000,
+              "cache_write_long": 1000000000
+            }
+          }
+        }
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "name": "claude-opus-5-5",
+      "context_window": 1000000,
+      "max_output_tokens": 128000,
+      "capabilities": { "tools": true, "image_input": true },
+      "prices": [
+        {
+          "effective_from": "2026-11-20",
+          "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "nano_usd_per_mtok": {
+            "input": 4000000000,
+            "output": 20000000000,
+            "cache_read": 200000000,
+            "cache_write_short": 5000000000,
+            "cache_write_long": 8000000000
+          }
+        }
+      ]
+    },
+    {
+      "provider": "openai",
+      "name": "gpt-6-luna",
+      "context_window": 1050000,
+      "max_output_tokens": 128000,
+      "capabilities": { "tools": true, "image_input": true },
+      "prices": [
+        {
+          "effective_from": "2026-11-20",
+          "source": "https://developers.openai.com/api/docs/pricing",
+          "nano_usd_per_mtok": {
+            "input": 100000000,
+            "output": 500000000,
+            "cache_read": 10000000,
+            "cache_write_short": 125000000,
+            "cache_write_long": 250000000
+          },
+          "long_context": {
+            "above_input_tokens": 272000,
+            "nano_usd_per_mtok": {
+              "input": 200000000,
+              "output": 750000000,
+              "cache_read": 20000000,
+              "cache_write_short": 250000000,
+              "cache_write_long": 500000000
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
