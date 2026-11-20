@@ -133,11 +133,25 @@ pub struct Usage {
     pub output_tokens: u64,
     /// Input tokens read from the prompt cache.
     pub cache_read_tokens: u64,
-    /// Input tokens written to the prompt cache.
-    pub cache_write_tokens: u64,
+    /// Input tokens written to the short-lived prompt cache (5 minutes on
+    /// Anthropic, 30 minutes on OpenAI). OpenAI does not report the
+    /// lifetime, so all its writes count here.
+    pub cache_write_short_tokens: u64,
+    /// Input tokens written to the long-lived prompt cache (1 hour on
+    /// Anthropic, 12 hours on OpenAI), which is priced higher.
+    pub cache_write_long_tokens: u64,
 }
 
 impl Usage {
+    /// All input tokens of the request, cached or not. Long-context price
+    /// tiers are chosen by this count.
+    pub fn total_input_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_short_tokens)
+            .saturating_add(self.cache_write_long_tokens)
+    }
+
     /// Combines two reports of the same response. Providers send running
     /// totals, sometimes repeating a count with zero, so each field keeps
     /// the larger value.
@@ -146,7 +160,12 @@ impl Usage {
             input_tokens: self.input_tokens.max(other.input_tokens),
             output_tokens: self.output_tokens.max(other.output_tokens),
             cache_read_tokens: self.cache_read_tokens.max(other.cache_read_tokens),
-            cache_write_tokens: self.cache_write_tokens.max(other.cache_write_tokens),
+            cache_write_short_tokens: self
+                .cache_write_short_tokens
+                .max(other.cache_write_short_tokens),
+            cache_write_long_tokens: self
+                .cache_write_long_tokens
+                .max(other.cache_write_long_tokens),
         }
     }
 }
@@ -369,17 +388,24 @@ mod tests {
         let response = fold(&[
             StreamEvent::Usage(Usage {
                 cache_read_tokens: 9,
+                cache_write_long_tokens: 3,
                 ..usage(12, 1)
             }),
-            StreamEvent::Usage(usage(0, 40)),
+            StreamEvent::Usage(Usage {
+                cache_write_short_tokens: 2,
+                ..usage(0, 40)
+            }),
         ]);
         assert_eq!(
             response.usage,
             Usage {
                 cache_read_tokens: 9,
+                cache_write_short_tokens: 2,
+                cache_write_long_tokens: 3,
                 ..usage(12, 40)
             }
         );
+        assert_eq!(response.usage.total_input_tokens(), 26);
     }
 
     #[test]
