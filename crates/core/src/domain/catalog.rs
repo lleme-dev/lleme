@@ -27,9 +27,12 @@ pub enum Provider {
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
     /// Accepts tool definitions and returns tool calls.
-    pub tools: bool,
+    pub has_tools: bool,
     /// Accepts images in the input.
-    pub image_input: bool,
+    pub has_image_input: bool,
+    /// Accepts tools on OpenAI Chat Completions only with reasoning off
+    /// (`reasoning_effort: "none"`), as `gpt-6-luna` does.
+    pub has_tool_reasoning_limit: bool,
 }
 
 /// Prices in force from one date until the next period starts.
@@ -167,7 +170,8 @@ mod tests {
         let haiku = catalog
             .model(Provider::Anthropic, "claude-haiku-5-5")
             .unwrap();
-        assert!(haiku.capabilities.tools);
+        assert!(haiku.capabilities.has_tools);
+        assert!(!haiku.capabilities.has_tool_reasoning_limit);
         // Usage recorded from a real Claude Haiku 5.5 response: 34 in, 11 out.
         // 34 x $0.10/M + 11 x $0.50/M = $0.0000089.
         let usage = Usage {
@@ -188,7 +192,8 @@ mod tests {
             price.tiers().cost(&long_write),
             NanoUsd(3_200 + 5_500 + 1_080_600)
         );
-        assert!(catalog.model(Provider::OpenAi, "gpt-6-luna").is_some());
+        let luna = catalog.model(Provider::OpenAi, "gpt-6-luna").unwrap();
+        assert!(luna.capabilities.has_tool_reasoning_limit);
         assert!(
             catalog
                 .model(Provider::OpenAi, "claude-haiku-5-5")
@@ -199,7 +204,7 @@ mod tests {
     fn model(name: &str, prices: &[String]) -> String {
         format!(
             r#"{{"provider":"openai","name":"{name}","context_window":10,"max_output_tokens":5,
-            "capabilities":{{"tools":false,"image_input":false}},"prices":[{}]}}"#,
+            "capabilities":{{"has_tools":false,"has_image_input":false,"has_tool_reasoning_limit":false}},"prices":[{}]}}"#,
             prices.join(",")
         )
     }
@@ -272,7 +277,7 @@ mod tests {
             CatalogError::Malformed(_)
         ));
         assert!(matches!(
-            error(file(&[ok.replace("\"tools\"", "\"tool\"")])),
+            error(file(&[ok.replace("\"has_tools\"", "\"tools\"")])),
             CatalogError::Malformed(_)
         ));
     }
