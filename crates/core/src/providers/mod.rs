@@ -4,6 +4,7 @@
 //! network call itself goes through the `HttpClient` port.
 
 pub mod anthropic;
+pub mod openai;
 pub mod sse;
 
 use crate::ports::HttpError;
