@@ -49,7 +49,7 @@ impl<B> AnthropicStream<B>
 where
     B: Stream<Item = Result<Vec<u8>, HttpError>> + Unpin,
 {
-    fn new(body: B) -> Self {
+    pub(crate) fn new(body: B) -> Self {
         Self {
             body,
             parser: SseParser::new(),

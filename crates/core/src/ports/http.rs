@@ -113,6 +113,13 @@ pub(crate) mod fake {
     /// tests can split events and UTF-8 characters across chunks.
     pub(crate) struct ChunkedBody(VecDeque<Result<Vec<u8>, HttpError>>);
 
+    impl ChunkedBody {
+        /// A body that yields `bytes` in pieces of `chunk` bytes.
+        pub(crate) fn of(bytes: &[u8], chunk: usize) -> Self {
+            ChunkedBody(bytes.chunks(chunk.max(1)).map(|c| Ok(c.to_vec())).collect())
+        }
+    }
+
     impl Stream for ChunkedBody {
         type Item = Result<Vec<u8>, HttpError>;
 
