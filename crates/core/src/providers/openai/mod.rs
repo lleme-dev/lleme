@@ -7,7 +7,7 @@ use std::fmt;
 
 use serde_json::{Map, Value, json};
 
-use super::ProviderError;
+use super::{ProviderError, RequestError};
 use crate::domain::chat::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice,
     Usage,
@@ -18,6 +18,7 @@ pub mod inbound;
 pub mod reply;
 mod stream;
 
+pub(crate) use stream::OpenAiEvents;
 pub use stream::{OpenAiStream, stream};
 
 /// OpenAI's public API endpoint.
@@ -105,7 +106,14 @@ pub fn build_request(
         body.insert("stream".into(), json!(true));
         body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
-    Ok(HttpRequest {
+    Ok(http_request(
+        config,
+        Value::Object(body).to_string().into_bytes(),
+    ))
+}
+
+fn http_request(config: &OpenAiConfig, body: Vec<u8>) -> HttpRequest {
+    HttpRequest {
         url: format!(
             "{}/v1/chat/completions",
             config.base_url.trim_end_matches('/')
@@ -114,8 +122,37 @@ pub fn build_request(
             ("authorization".into(), format!("Bearer {}", config.api_key)),
             ("content-type".into(), "application/json".into()),
         ],
-        body: Value::Object(body).to_string().into_bytes(),
-    })
+        body,
+    }
+}
+
+/// Builds the HTTP request that forwards an OpenAI client's body as is,
+/// with one change to streamed requests: usage is always asked for,
+/// because the gateway needs it for the cost.
+pub fn forward_request(
+    config: &OpenAiConfig,
+    body: &[u8],
+    stream: bool,
+) -> Result<HttpRequest, RequestError> {
+    if !stream {
+        return Ok(http_request(config, body.to_vec()));
+    }
+    let mut value: Map<String, Value> = serde_json::from_slice(body)
+        .map_err(|e| RequestError::Invalid(format!("body is not a JSON object: {e}")))?;
+    let options = value.entry("stream_options").or_insert_with(|| json!({}));
+    if options["include_usage"] == true {
+        return Ok(http_request(config, body.to_vec()));
+    }
+    match options {
+        Value::Object(options) => {
+            options.insert("include_usage".into(), json!(true));
+        }
+        other => *other = json!({ "include_usage": true }),
+    }
+    Ok(http_request(
+        config,
+        Value::Object(value).to_string().into_bytes(),
+    ))
 }
 
 // One neutral message can become several OpenAI messages: each tool
