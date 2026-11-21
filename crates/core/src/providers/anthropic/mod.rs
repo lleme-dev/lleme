@@ -17,6 +17,7 @@ pub mod inbound;
 pub mod reply;
 mod stream;
 
+pub(crate) use stream::AnthropicEvents;
 pub use stream::{AnthropicStream, stream};
 
 /// Anthropic's public API endpoint.
@@ -96,15 +97,47 @@ pub fn build_request(
     if stream {
         body.insert("stream".into(), json!(true));
     }
-    Ok(HttpRequest {
+    Ok(http_request(
+        config,
+        API_VERSION.into(),
+        Value::Object(body).to_string().into_bytes(),
+    ))
+}
+
+fn http_request(config: &AnthropicConfig, version: String, body: Vec<u8>) -> HttpRequest {
+    HttpRequest {
         url: format!("{}/v1/messages", config.base_url.trim_end_matches('/')),
         headers: vec![
             ("x-api-key".into(), config.api_key.clone()),
-            ("anthropic-version".into(), API_VERSION.into()),
+            ("anthropic-version".into(), version),
             ("content-type".into(), "application/json".into()),
         ],
-        body: Value::Object(body).to_string().into_bytes(),
-    })
+        body,
+    }
+}
+
+/// Builds the HTTP request that forwards an Anthropic client's body as
+/// is. Of the client's headers only `anthropic-version` and
+/// `anthropic-beta` are kept; the API key is always the gateway's.
+pub fn forward_request(
+    config: &AnthropicConfig,
+    body: Vec<u8>,
+    client_headers: &[(String, String)],
+) -> HttpRequest {
+    let named = |name: &'static str| {
+        client_headers
+            .iter()
+            .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+    };
+    let version = named("anthropic-version")
+        .next()
+        .unwrap_or_else(|| API_VERSION.into());
+    let mut request = http_request(config, version, body);
+    for beta in named("anthropic-beta") {
+        request.headers.push(("anthropic-beta".into(), beta));
+    }
+    request
 }
 
 fn message(message: &crate::domain::chat::Message) -> Result<Value, ProviderError> {
