@@ -98,6 +98,26 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, RequestError> {
     })
 }
 
+#[derive(serde::Deserialize)]
+struct StreamOptionsOnly {
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(serde::Deserialize)]
+struct StreamOptions {
+    include_usage: Option<bool>,
+}
+
+/// Whether a request asks for the closing usage chunk of a stream, which
+/// the neutral form does not carry. Other fields are scanned, not kept.
+pub fn include_usage(body: &[u8]) -> bool {
+    serde_json::from_slice::<StreamOptionsOnly>(body)
+        .ok()
+        .and_then(|r| r.stream_options)
+        .and_then(|o| o.include_usage)
+        .unwrap_or(false)
+}
+
 // Text content: a string, or an array of parts that are all text.
 fn text_of(content: &Value) -> Result<String, RequestError> {
     match content {
