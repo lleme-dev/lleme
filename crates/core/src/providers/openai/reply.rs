@@ -71,6 +71,13 @@ pub fn render_response(response: &ChatResponse, created: u64) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A whole error body, as OpenAI sends with an error status.
+pub fn render_error(error_type: &str, message: &str) -> Vec<u8> {
+    json!({ "error": { "message": message, "type": error_type, "param": null, "code": null } })
+        .to_string()
+        .into_bytes()
+}
+
 /// Writes neutral stream events as `chat.completion.chunk` SSE events.
 pub struct StreamEncoder {
     id: String,

@@ -2,6 +2,7 @@
 
 //! Domain types, use cases, ports and provider format translation for Lleme.
 
+pub mod app;
 mod bounds;
 pub mod domain;
 pub mod ports;

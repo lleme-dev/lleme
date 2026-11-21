@@ -79,6 +79,13 @@ enum Block {
     Tool,
 }
 
+/// A whole error body, as Anthropic sends with an error status.
+pub fn render_error(error_type: &str, message: &str) -> Vec<u8> {
+    json!({ "type": "error", "error": { "type": error_type, "message": message } })
+        .to_string()
+        .into_bytes()
+}
+
 /// Writes neutral stream events as Anthropic SSE events.
 #[derive(Default)]
 pub struct StreamEncoder {
